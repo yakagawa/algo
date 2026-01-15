@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>algo</title>
+  <style>
+    body, html {
+      margin: 0; padding: 0;
+      background: #228B22;
+      display: flex; justify-content: center; align-items: center;
+      height: 100vh;
+      gap: 18px;
+      font-family: sans-serif;
+    }
+    #wrap { display: flex; gap: 18px; align-items: center; }
+    canvas { border: 2px solid #000; background: #228B22; }
+
+    #panel{
+      width: 330px;
+      background: rgba(255,255,255,0.92);
+      border: 2px solid #000;
+      border-radius: 10px;
+      padding: 12px;
+      box-sizing: border-box;
+      max-height: 92vh;
+      overflow-y: auto;
+    }
+    #panel h2{ margin:0 0 10px; font-size:16px; }
+
+    .topRow{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      font-size: 13px;
+      font-weight: bold;
+    }
+
+    .slotBlock{
+      border: 1px solid rgba(0,0,0,0.25);
+      border-radius: 10px;
+      padding: 10px;
+      margin: 10px 0;
+      background: rgba(255,255,255,0.65);
+    }
+    .slotTitle{
+      display:flex;
+      justify-content: space-between;
+      align-items:center;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-weight:bold;
+      font-size: 13px;
+    }
+    .toggle{
+      display:flex;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: normal;
+      align-items: center;
+      white-space: nowrap;
+    }
+    .toggle label{
+      display:inline-flex;
+      gap: 4px;
+      align-items:center;
+      cursor: pointer;
+      user-select: none;
+    }
+    .row{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    select{ font-size: 14px; padding: 4px; }
+
+    #errorBox{
+      display:none;
+      margin-top: 10px;
+      padding: 8px;
+      border: 2px solid #b00020;
+      background: rgba(176,0,32,0.08);
+      color: #b00020;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.35;
+      white-space: pre-line;
+    }
+
+    .note{
+      margin-top: 10px;
+      font-size: 12px;
+      opacity: 0.85;
+      line-height: 1.35;
+    }
+  </style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+  <div id="panel">
+    <h2>固定するカードを指定</h2>
+
+    <div class="topRow">
+      <span>カード枚数</span>
+      <select id="countSelect"></select>
+    </div>
+
+    <div id="selectors"></div>
+    <div id="errorBox"></div>
+
+  </div>
+</div>
+
+<script>
+/* ===================== デッキ ===================== */
+const deck = [];
+for (let n = 0; n <= 11; n++) deck.push({ color: 'black', num: n });
+for (let n = 0; n <= 11; n++) deck.push({ color: 'white', num: n });
+
+/* ===================== Canvas ===================== */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const MARGIN = 20;
+
+/* ===================== UI ===================== */
+const selectorsDiv = document.getElementById('selectors');
+const errorBox = document.getElementById('errorBox');
+const countSelect = document.getElementById('countSelect');
+
+/* ===================== 可変状態 ===================== */
+let SLOT_COUNT = 4;
+let CARD_W = 120;
+let CARD_H = 180;
+let slots = [];
+let settings = [];
+let cards = []; // 表示：確定は card、未確定は null
+
+/* ===================== ユーティリティ ===================== */
+const cardKey = (c) => `${c.color}-${c.num}`;
+
+// 昇順（同数は黒→白）。black < white
+function cmpCard(a, b){
+  if (a.num !== b.num) return a.num - b.num;
+  const ra = (a.color === 'black') ? 0 : 1;
+  const rb = (b.color === 'black') ? 0 : 1;
+  return ra - rb;
+}
+const leq = (a,b) => cmpCard(a,b) <= 0;
+
+function showError(msg){
+  errorBox.style.display = 'block';
+  errorBox.textContent = msg;
+}
+function clearError(){
+  errorBox.style.display = 'none';
+  errorBox.textContent = '';
+}
+
+function shuffleInPlace(arr){
+  for (let i = arr.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/* ===================== レイアウト ===================== */
+function rebuildSlots(){
+  // 横に収めるためカード幅を調整
+  const paddingX = 40;
+  const availableW = canvas.width - paddingX * 2;
+  const idealW = (availableW - (SLOT_COUNT - 1) * MARGIN) / SLOT_COUNT;
+
+  CARD_W = Math.max(70, Math.min(120, Math.floor(idealW)));
+  CARD_H = Math.floor(CARD_W * 1.5);
+
+  const totalW = SLOT_COUNT * CARD_W + (SLOT_COUNT - 1) * MARGIN;
+  const startX = (canvas.width - totalW) / 2;
+  const startY = (canvas.height - CARD_H) / 2;
+
+  slots = [];
+  for (let i = 0; i < SLOT_COUNT; i++){
+    slots.push({ x: startX + i * (CARD_W + MARGIN), y: startY });
+  }
+}
+
+/* ===================== 描画 ===================== */
+function draw(){
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  for (let i = 0; i < SLOT_COUNT; i++){
+    const {x, y} = slots[i];
+    const c = cards[i];
+
+    if (c === null){
+      // ランダム未確定：グレー、数字なし
+      ctx.fillStyle = '#C8C8C8';
+      ctx.fillRect(x, y, CARD_W, CARD_H);
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(x, y, CARD_W, CARD_H);
+      continue;
+    }
+
+    // 確定カード
+    ctx.fillStyle = (c.color === 'black') ? '#000' : '#fff';
+    ctx.fillRect(x, y, CARD_W, CARD_H);
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(x, y, CARD_W, CARD_H);
+
+    ctx.fillStyle = (c.color === 'black') ? '#fff' : '#000';
+    ctx.font = `bold ${Math.floor(CARD_W*0.55)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(c.num, x + CARD_W/2, y + CARD_H/2);
+  }
+}
+
+/* =========================================================
+   ここが今回の変更点：カード選びは
+   (1) 固定を除外
+   (2) 残り必要枚数をランダムに引く
+   (3) 引いたカードを「ランダムに」スロットへ配置（昇順制約を満たす）
+       できなければ (2) に戻る
+========================================================= */
+
+// 固定情報を作る
+function getFixedInfo(){
+  const fixedAt = Array(SLOT_COUNT).fill(null);
+  const fixedList = [];
+  const randomPositions = [];
+
+  for (let i = 0; i < SLOT_COUNT; i++){
+    if (settings[i].mode === 'fixed'){
+      const c = { color: settings[i].color, num: Number(settings[i].num) };
+      fixedAt[i] = c;
+      fixedList.push(c);
+    } else {
+      randomPositions.push(i);
+    }
+  }
+
+  // 固定重複チェック
+  const s = new Set(fixedList.map(cardKey));
+  if (s.size !== fixedList.length){
+    return { ok:false, msg:'エラー：固定カードが重複しています。' };
+  }
+
+  return { ok:true, fixedAt, fixedList, randomPositions };
+}
+
+// (3) 引いたカード drawn を、ランダムスロットへ「ランダムに」配置できるか試す
+// 成功したら fullCards（スロット順の配列）を返す
+function tryPlaceDrawnIntoRandomSlots(fixedAt, randomPositions, drawn){
+  // 右側の次固定（上限）を前計算
+  const nextFixed = Array(SLOT_COUNT).fill(null);
+  let last = null;
+  for (let i = SLOT_COUNT - 1; i >= 0; i--){
+    nextFixed[i] = last;
+    if (fixedAt[i]) last = fixedAt[i];
+  }
+
+  const full = Array(SLOT_COUNT).fill(null);
+  // 固定は先に入れる
+  for (let i = 0; i < SLOT_COUNT; i++){
+    if (fixedAt[i]) full[i] = fixedAt[i];
+  }
+
+  // drawn を可変リストとして持つ
+  const pool = drawn.slice();
+
+  function dfs(posIndex, prevCard){
+    if (posIndex === randomPositions.length) return true;
+
+    const pos = randomPositions[posIndex];
+    const rightBound = nextFixed[pos]; // null or card
+
+    // この位置に置ける候補を列挙し、順番もランダムにする
+    const candidatesIdx = [];
+    for (let k = 0; k < pool.length; k++){
+      const c = pool[k];
+      if (prevCard && !leq(prevCard, c)) continue;
+      if (rightBound && !leq(c, rightBound)) continue;
+      candidatesIdx.push(k);
+    }
+    if (candidatesIdx.length === 0) return false;
+
+    shuffleInPlace(candidatesIdx);
+
+    for (const k of candidatesIdx){
+      const c = pool[k];
+
+      // 置く
+      full[pos] = c;
+
+      // pool から削除して次へ
+      const removed = pool.splice(k, 1)[0];
+      if (dfs(posIndex + 1, c)) return true;
+
+      // 戻す
+      pool.splice(k, 0, removed);
+      full[pos] = null;
+    }
+    return false;
+  }
+
+  // DFS で置く（prevCardは「直前のスロットのカード」）
+  function prevCardAtPosition(pos){
+    for (let i = pos - 1; i >= 0; i--){
+      if (full[i]) return full[i];
+      // まだ未配置のランダム位置もありうるが、DFSは左から埋めるので
+      // 「full[i] が null」ならまだ埋まってないだけ。→ prevCard は posIndex によって保証される
+    }
+    return null;
+  }
+
+  // randomPositions は左から順に埋めたいので昇順にする
+  const rp = randomPositions.slice().sort((a,b)=>a-b);
+
+  // DFS中、prevCardは「直前の確定カード」になる必要があるので、
+  // 各ステップで prev を更新するため、埋めた full を見て決める実装にする。
+  function dfs2(idx){
+    if (idx === rp.length) return true;
+    const pos = rp[idx];
+
+    // 直前確定カードを取る
+    const prev = (() => {
+      for (let i = pos - 1; i >= 0; i--){
+        if (full[i]) return full[i];
+      }
+      return null;
+    })();
+
+    const rightBound = nextFixed[pos];
+
+    // 候補インデックス
+    const candIdx = [];
+    for (let k = 0; k < pool.length; k++){
+      const c = pool[k];
+      if (prev && !leq(prev, c)) continue;
+      if (rightBound && !leq(c, rightBound)) continue;
+      candIdx.push(k);
+    }
+    if (candIdx.length === 0) return false;
+
+    shuffleInPlace(candIdx);
+
+    for (const k of candIdx){
+      const c = pool[k];
+      full[pos] = c;
+      const removed = pool.splice(k, 1)[0];
+
+      if (dfs2(idx + 1)) return true;
+
+      pool.splice(k, 0, removed);
+      full[pos] = null;
+    }
+    return false;
+  }
+
+  const ok = dfs2(0);
+  if (!ok) return null;
+
+  // 最終チェック：全スロットが昇順制約を満たすか（念のため）
+  for (let i = 1; i < SLOT_COUNT; i++){
+    if (!leq(full[i-1], full[i])) return null;
+  }
+
+  return full;
+}
+
+// (1)(2)(3) をまとめて実行：成功するまで(2)に戻る
+function buildByResample(){
+  const info = getFixedInfo();
+  if (!info.ok) return { ok:false, msg: info.msg };
+
+  const { fixedAt, fixedList, randomPositions } = info;
+  const need = randomPositions.length;
+
+  // 固定が増えすぎてデッキ不足
+  if (deck.length - fixedList.length < need){
+    return { ok:false, msg:'エラー：残りデッキが不足しています。' };
+  }
+
+  // (1) 固定を除外したデッキ
+  const fixedSet = new Set(fixedList.map(cardKey));
+  const baseRemaining = deck.filter(c => !fixedSet.has(cardKey(c)));
+
+  const MAX_RESAMPLE = 2000;
+
+  for (let t = 0; t < MAX_RESAMPLE; t++){
+    // (2) need枚をランダムで引く（重複なし）
+    const rem = baseRemaining.slice();
+    // Fisher-Yatesで先頭need枚取るのが速い
+    shuffleInPlace(rem);
+    const drawn = rem.slice(0, need);
+
+    // (3) 引いたカードをランダムにスロットへ配置（できなければ(2)へ）
+    const placed = tryPlaceDrawnIntoRandomSlots(fixedAt, randomPositions, drawn);
+    if (placed) return { ok:true, cards: placed };
+  }
+
+  return { ok:false, msg:'エラー：条件を満たす配置が見つかりませんでした。' };
+}
+
+/* ===================== プレビュー（固定だけ表示） ===================== */
+function previewFixedOnly(){
+  clearError();
+  cards = Array(SLOT_COUNT).fill(null);
+
+  // 固定だけ反映
+  for (let i = 0; i < SLOT_COUNT; i++){
+    if (settings[i].mode === 'fixed'){
+      cards[i] = { color: settings[i].color, num: Number(settings[i].num) };
+    }
+  }
+
+  // 固定が矛盾していたらエラー表示（この時点でも分かるように）
+  const info = getFixedInfo();
+  if (!info.ok){
+    showError(info.msg);
+  } else {
+    // 一応「確定させようとすると可能か」を軽く確認（表示は固定のみのまま）
+    const test = buildByResample();
+    if (!test.ok) showError(test.msg);
+  }
+
+  draw();
+}
+
+/* ===================== UI構築 ===================== */
+function rebuildSettings(){
+  // settings初期化（スロット数に合わせる）
+  settings = Array.from({length: SLOT_COUNT}, (_, i) => ({
+    mode: 'random',
+    color: (i % 2 === 0) ? 'black' : 'white',
+    num: i % 12
+  }));
+
+  selectorsDiv.innerHTML = '';
+
+  for (let i = 0; i < SLOT_COUNT; i++){
+    const block = document.createElement('div');
+    block.className = 'slotBlock';
+
+    const numOptions = Array.from({length:12}, (_,n)=>`<option value="${n}">${n}</option>`).join('');
+
+    block.innerHTML = `
+      <div class="slotTitle">
+        <span>スロット ${i+1}</span>
+        <span class="toggle">
+          <label><input type="radio" name="mode-${i}" value="random" checked>ランダム</label>
+          <label><input type="radio" name="mode-${i}" value="fixed">固定</label>
+        </span>
+      </div>
+      <div class="row">
+        <select class="colorSel" disabled>
+          <option value="black">黒</option>
+          <option value="white">白</option>
+        </select>
+        <select class="numSel" disabled>
+          ${numOptions}
+        </select>
+      </div>
+    `;
+
+    selectorsDiv.appendChild(block);
+
+    const rbRandom = block.querySelector(`input[value="random"]`);
+    const rbFixed  = block.querySelector(`input[value="fixed"]`);
+    const colorSel = block.querySelector('.colorSel');
+    const numSel   = block.querySelector('.numSel');
+
+    // 初期値
+    colorSel.value = settings[i].color;
+    numSel.value   = settings[i].num;
+
+    function syncEnabled(){
+      const fixed = settings[i].mode === 'fixed';
+      colorSel.disabled = !fixed;
+      numSel.disabled = !fixed;
+    }
+
+    rbRandom.addEventListener('change', () => {
+      settings[i].mode = 'random';
+      syncEnabled();
+      previewFixedOnly();
+    });
+
+    rbFixed.addEventListener('change', () => {
+      settings[i].mode = 'fixed';
+      syncEnabled();
+      previewFixedOnly();
+    });
+
+    colorSel.addEventListener('change', () => {
+      settings[i].color = colorSel.value;
+      previewFixedOnly();
+    });
+
+    numSel.addEventListener('change', () => {
+      settings[i].num = Number(numSel.value);
+      previewFixedOnly();
+    });
+
+    syncEnabled();
+  }
+
+  rebuildSlots();
+  previewFixedOnly();
+}
+
+/* ===================== イベント ===================== */
+canvas.addEventListener('click', () => {
+  // クリックでランダム枠を確定（(1)(2)(3)方式）
+  const res = buildByResample();
+  if (!res.ok){
+    showError(res.msg);
+    return;
+  }
+  clearError();
+  cards = res.cards;
+  draw();
+});
+
+/* ===================== 初期化（枚数選択） ===================== */
+(function initCountSelect(){
+  // 画面に収まりやすい範囲として2〜8
+  for (let n = 2; n <= 8; n++){
+    const opt = document.createElement('option');
+    opt.value = String(n);
+    opt.textContent = String(n);
+    if (n === SLOT_COUNT) opt.selected = true;
+    countSelect.appendChild(opt);
+  }
+
+  countSelect.addEventListener('change', () => {
+    SLOT_COUNT = Number(countSelect.value);
+    rebuildSettings();
+  });
+})();
+
+rebuildSettings();
+</script>
+</body>
+</html>
