@@ -12,7 +12,6 @@
       font-family: sans-serif;
     }
 
-    /* ★スマホで左右が切れないように、全体に少し余白 */
     body {
       padding: 12px;
       box-sizing: border-box;
@@ -22,7 +21,6 @@
       min-height: 100vh;
     }
 
-    /* ★横並びが基本。狭いときは後で縦並びにする */
     #wrap {
       display: flex;
       gap: 12px;
@@ -32,13 +30,12 @@
       max-width: 1200px;
     }
 
-    /* ★canvasはCSSで画面幅に収まるように縮小 */
     canvas {
       border: 2px solid #000;
       background: #228B22;
       width: min(800px, 100%);
-      height: auto; /* アスペクト比維持で縮小 */
-      touch-action: manipulation; /* スマホのタップ遅延を減らす */
+      height: auto;
+      touch-action: manipulation;
     }
 
     #panel{
@@ -87,6 +84,7 @@
       font-weight: normal;
       align-items: center;
       white-space: nowrap;
+      flex-wrap: wrap;
     }
     .toggle label{
       display:inline-flex;
@@ -115,14 +113,6 @@
       white-space: pre-line;
     }
 
-    .note{
-      margin-top: 10px;
-      font-size: 12px;
-      opacity: 0.85;
-      line-height: 1.35;
-    }
-
-    /* ★スマホ：縦並びにして「左端が見えない」を根本解消 */
     @media (max-width: 900px) {
       #wrap {
         flex-direction: column;
@@ -142,7 +132,7 @@
   <canvas id="gameCanvas" width="800" height="600"></canvas>
 
   <div id="panel">
-    <h2>固定するカードを指定</h2>
+    <h2>固定する色またはカードを指定</h2>
 
     <div class="topRow">
       <span>カード枚数</span>
@@ -176,7 +166,7 @@ let CARD_W = 120;
 let CARD_H = 180;
 let slots = [];
 let settings = [];
-let cards = []; // 表示：確定は card、未確定は null
+let cards = []; // 表示：確定カードは {color,num}、色固定プレビューは {color,num:null}、未確定は null
 
 /* ===================== ユーティリティ ===================== */
 const cardKey = (c) => `${c.color}-${c.num}`;
@@ -209,7 +199,6 @@ function shuffleInPlace(arr){
 
 /* ===================== レイアウト ===================== */
 function rebuildSlots(){
-  // 800x600 の内部解像度に対して、座標計算は内部サイズで行う
   const paddingX = 40;
   const availableW = canvas.width - paddingX * 2;
   const idealW = (availableW - (SLOT_COUNT - 1) * MARGIN) / SLOT_COUNT;
@@ -245,153 +234,169 @@ function draw(){
       continue;
     }
 
-    // 確定カード
+    // 色固定 or 確定カード
     ctx.fillStyle = (c.color === 'black') ? '#000' : '#fff';
     ctx.fillRect(x, y, CARD_W, CARD_H);
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 4;
     ctx.strokeRect(x, y, CARD_W, CARD_H);
 
+    // num が null のときは数字を表示しない（色固定プレビュー）
+    if (c.num === null || c.num === undefined) continue;
+
     ctx.fillStyle = (c.color === 'black') ? '#fff' : '#000';
     ctx.font = `bold ${Math.floor(CARD_W*0.55)}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(c.num, x + CARD_W/2, y + CARD_H/2);
+    ctx.fillText(String(c.num), x + CARD_W/2, y + CARD_H/2);
   }
 }
 
-/* ===================== (1)(2)(3)方式 ===================== */
-function getFixedInfo(){
+/* ===================== 制約の解釈（ランダム / 色固定 / 固定） ===================== */
+function getConstraints(){
+  // fixedAt[i] = {color,num} | null（固定のみ）
+  // colorAt[i] = 'black'|'white'|null（色固定・固定）
   const fixedAt = Array(SLOT_COUNT).fill(null);
+  const colorAt = Array(SLOT_COUNT).fill(null);
   const fixedList = [];
-  const randomPositions = [];
 
   for (let i = 0; i < SLOT_COUNT; i++){
-    if (settings[i].mode === 'fixed'){
-      const c = { color: settings[i].color, num: Number(settings[i].num) };
+    const s = settings[i];
+    if (s.mode === 'fixed'){
+      const c = { color: s.color, num: Number(s.num) };
       fixedAt[i] = c;
+      colorAt[i] = s.color;
       fixedList.push(c);
-    } else {
-      randomPositions.push(i);
+    } else if (s.mode === 'color'){
+      colorAt[i] = s.color;
     }
   }
 
-  const s = new Set(fixedList.map(cardKey));
-  if (s.size !== fixedList.length){
-    return { ok:false, msg:'エラー：固定カードが重複しています。' };
+  // 固定カード重複チェック
+  const set = new Set(fixedList.map(cardKey));
+  if (set.size !== fixedList.length){
+    return { ok:false, msg:'エラー：固定カード（色＋数字）が重複しています。' };
   }
 
-  return { ok:true, fixedAt, fixedList, randomPositions };
+  return { ok:true, fixedAt, colorAt, fixedList };
 }
 
-function tryPlaceDrawnIntoRandomSlots(fixedAt, randomPositions, drawn){
-  const nextFixed = Array(SLOT_COUNT).fill(null);
+/* ===================== 配置生成（ルール：昇順＆重複なし＆制約を満たす） ===================== */
+function buildByDFS(){
+  const info = getConstraints();
+  if (!info.ok) return { ok:false, msg: info.msg };
+
+  const { fixedAt, colorAt, fixedList } = info;
+
+  if (deck.length < SLOT_COUNT){
+    return { ok:false, msg:'エラー：デッキが不足しています。' };
+  }
+
+  // 固定カードを除いた残り
+  const fixedSet = new Set(fixedList.map(cardKey));
+  const poolBase = deck.filter(c => !fixedSet.has(cardKey(c)));
+
+  // 右側に「固定カード」がある場合の上限制約（固定のみ使う）
+  const nextExactFixed = Array(SLOT_COUNT).fill(null);
   let last = null;
   for (let i = SLOT_COUNT - 1; i >= 0; i--){
-    nextFixed[i] = last;
+    nextExactFixed[i] = last;
     if (fixedAt[i]) last = fixedAt[i];
   }
 
-  const full = Array(SLOT_COUNT).fill(null);
-  for (let i = 0; i < SLOT_COUNT; i++){
-    if (fixedAt[i]) full[i] = fixedAt[i];
-  }
+  const MAX_TRY = 2000;
 
-  const pool = drawn.slice();
-  const rp = randomPositions.slice().sort((a,b)=>a-b);
+  for (let t = 0; t < MAX_TRY; t++){
+    const pool = poolBase.slice();
+    shuffleInPlace(pool);
 
-  function dfs(idx){
-    if (idx === rp.length) return true;
-    const pos = rp[idx];
+    const full = Array(SLOT_COUNT).fill(null);
 
-    const prev = (() => {
+    // 固定カードを先に埋める
+    for (let i = 0; i < SLOT_COUNT; i++){
+      if (fixedAt[i]) full[i] = fixedAt[i];
+    }
+
+    function prevCard(pos){
       for (let i = pos - 1; i >= 0; i--){
         if (full[i]) return full[i];
       }
       return null;
-    })();
-
-    const rightBound = nextFixed[pos];
-
-    const candIdx = [];
-    for (let k = 0; k < pool.length; k++){
-      const c = pool[k];
-      if (prev && !leq(prev, c)) continue;
-      if (rightBound && !leq(c, rightBound)) continue;
-      candIdx.push(k);
     }
-    if (candIdx.length === 0) return false;
 
-    shuffleInPlace(candIdx);
+    function dfs(pos){
+      if (pos === SLOT_COUNT) return true;
 
-    for (const k of candIdx){
-      const c = pool[k];
-      full[pos] = c;
+      // すでに固定なら整合性だけ確認して次へ
+      if (fixedAt[pos]){
+        const c = fixedAt[pos];
+        const p = prevCard(pos);
+        if (p && !leq(p, c)) return false;
+        const rb = nextExactFixed[pos];
+        if (rb && !leq(c, rb)) return false;
+        return dfs(pos + 1);
+      }
 
-      const removed = pool.splice(k, 1)[0];
-      if (dfs(idx + 1)) return true;
+      const p = prevCard(pos);
+      const rb = nextExactFixed[pos];
+      const needColor = colorAt[pos]; // null なら自由
 
-      pool.splice(k, 0, removed);
-      full[pos] = null;
+      // 候補 index を集める
+      const cand = [];
+      for (let k = 0; k < pool.length; k++){
+        const c = pool[k];
+        if (needColor && c.color !== needColor) continue;
+        if (p && !leq(p, c)) continue;
+        if (rb && !leq(c, rb)) continue;
+        cand.push(k);
+      }
+      if (cand.length === 0) return false;
+
+      shuffleInPlace(cand);
+
+      for (const k of cand){
+        const c = pool[k];
+        full[pos] = c;
+
+        const removed = pool.splice(k, 1)[0];
+        if (dfs(pos + 1)) return true;
+
+        pool.splice(k, 0, removed);
+        full[pos] = null;
+      }
+      return false;
     }
-    return false;
-  }
 
-  const ok = dfs(0);
-  if (!ok) return null;
-
-  for (let i = 1; i < SLOT_COUNT; i++){
-    if (!leq(full[i-1], full[i])) return null;
-  }
-  return full;
-}
-
-function buildByResample(){
-  const info = getFixedInfo();
-  if (!info.ok) return { ok:false, msg: info.msg };
-
-  const { fixedAt, fixedList, randomPositions } = info;
-  const need = randomPositions.length;
-
-  if (deck.length - fixedList.length < need){
-    return { ok:false, msg:'エラー：残りデッキが不足しています。' };
-  }
-
-  const fixedSet = new Set(fixedList.map(cardKey));
-  const baseRemaining = deck.filter(c => !fixedSet.has(cardKey(c)));
-
-  const MAX_RESAMPLE = 2000;
-
-  for (let t = 0; t < MAX_RESAMPLE; t++){
-    const rem = baseRemaining.slice();
-    shuffleInPlace(rem);
-    const drawn = rem.slice(0, need);
-
-    const placed = tryPlaceDrawnIntoRandomSlots(fixedAt, randomPositions, drawn);
-    if (placed) return { ok:true, cards: placed };
+    if (dfs(0)){
+      // 念のため最終チェック
+      for (let i = 1; i < SLOT_COUNT; i++){
+        if (!leq(full[i-1], full[i])) return { ok:false, msg:'内部エラー：並び順が崩れました。' };
+      }
+      return { ok:true, cards: full };
+    }
   }
 
   return { ok:false, msg:'エラー：条件を満たす配置が見つかりませんでした。' };
 }
 
-/* ===================== プレビュー（固定だけ表示） ===================== */
+/* ===================== プレビュー（固定/色固定だけ表示） ===================== */
 function previewFixedOnly(){
   clearError();
   cards = Array(SLOT_COUNT).fill(null);
 
   for (let i = 0; i < SLOT_COUNT; i++){
-    if (settings[i].mode === 'fixed'){
-      cards[i] = { color: settings[i].color, num: Number(settings[i].num) };
+    const s = settings[i];
+    if (s.mode === 'fixed'){
+      cards[i] = { color: s.color, num: Number(s.num) };
+    } else if (s.mode === 'color'){
+      // 色だけ表示（数字は未確定）
+      cards[i] = { color: s.color, num: null };
     }
   }
 
-  const info = getFixedInfo();
-  if (!info.ok){
-    showError(info.msg);
-  } else {
-    const test = buildByResample();
-    if (!test.ok) showError(test.msg);
-  }
+  // 矛盾がないか軽くテスト（エラーだけ出す）
+  const test = buildByDFS();
+  if (!test.ok) showError(test.msg);
 
   draw();
 }
@@ -399,6 +404,7 @@ function previewFixedOnly(){
 /* ===================== UI構築 ===================== */
 function rebuildSettings(){
   settings = Array.from({length: SLOT_COUNT}, (_, i) => ({
+    // mode: 'random' | 'color' | 'fixed'
     mode: 'random',
     color: (i % 2 === 0) ? 'black' : 'white',
     num: i % 12
@@ -417,7 +423,8 @@ function rebuildSettings(){
         <span>スロット ${i+1}</span>
         <span class="toggle">
           <label><input type="radio" name="mode-${i}" value="random" checked>ランダム</label>
-          <label><input type="radio" name="mode-${i}" value="fixed">固定</label>
+          <label><input type="radio" name="mode-${i}" value="color">色</label>
+          <label><input type="radio" name="mode-${i}" value="fixed">カード</label>
         </span>
       </div>
       <div class="row">
@@ -434,6 +441,7 @@ function rebuildSettings(){
     selectorsDiv.appendChild(block);
 
     const rbRandom = block.querySelector(`input[value="random"]`);
+    const rbColor  = block.querySelector(`input[value="color"]`);
     const rbFixed  = block.querySelector(`input[value="fixed"]`);
     const colorSel = block.querySelector('.colorSel');
     const numSel   = block.querySelector('.numSel');
@@ -442,13 +450,19 @@ function rebuildSettings(){
     numSel.value   = settings[i].num;
 
     function syncEnabled(){
-      const fixed = settings[i].mode === 'fixed';
-      colorSel.disabled = !fixed;
-      numSel.disabled = !fixed;
+      const m = settings[i].mode;
+      colorSel.disabled = (m === 'random');
+      numSel.disabled   = (m !== 'fixed');
     }
 
     rbRandom.addEventListener('change', () => {
       settings[i].mode = 'random';
+      syncEnabled();
+      previewFixedOnly();
+    });
+
+    rbColor.addEventListener('change', () => {
+      settings[i].mode = 'color';
       syncEnabled();
       previewFixedOnly();
     });
@@ -478,13 +492,13 @@ function rebuildSettings(){
 
 /* ===================== イベント ===================== */
 canvas.addEventListener('click', () => {
-  const res = buildByResample();
+  const res = buildByDFS();
   if (!res.ok){
     showError(res.msg);
     return;
   }
   clearError();
-  cards = res.cards;
+  cards = res.cards; // 色固定のスロットもここで数字が決まる（ルールに従う／重複なし）
   draw();
 });
 
