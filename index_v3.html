@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>カードめくりゲーム（条件付き統計）</title>
+  <style>
+    body, html {
+      margin: 0; padding: 0;
+      background: #228B22;
+      display: flex; justify-content: center; align-items: center;
+      height: 100vh;
+      font-family: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+    }
+
+    .wrap {
+      position: relative;
+      width: 860px;
+      max-width: 96vw;
+    }
+
+    /* 上部UIバー */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 10px;
+      user-select: none;
+    }
+
+    .badge {
+      background: rgba(255,255,255,0.15);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.25);
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 16px;
+      letter-spacing: .5px;
+      cursor: pointer;
+      backdrop-filter: blur(4px);
+    }
+
+    .badge span {
+      font-weight: 700;
+      font-size: 18px;
+      margin-left: 6px;
+    }
+
+    canvas {
+      width: 100%;
+      height: auto;
+      border: 2px solid #000;
+      background: #228B22;
+      display: block;
+    }
+
+    /* ===== ダイヤル式ピッカー（モーダル） ===== */
+    .modal {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.35);
+      border-radius: 10px;
+    }
+    .modal.show { display: flex; }
+
+    .picker {
+      width: 320px;
+      max-width: 92%;
+      background: rgba(20,20,20,0.95);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+      overflow: hidden;
+    }
+
+    .pickerHeader {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.12);
+      color: #fff;
+      font-size: 14px;
+    }
+
+    .pickerHeader button {
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.18);
+      padding: 8px 10px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .pickerBody {
+      position: relative;
+      height: 220px;
+      padding: 10px 0;
+    }
+
+    /* 中央の選択ガイド */
+    .centerHighlight {
+      position: absolute;
+      left: 0; right: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      height: 44px;
+      border-top: 1px solid rgba(255,255,255,0.18);
+      border-bottom: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.06);
+      pointer-events: none;
+    }
+
+    /* スクロールリスト（ダイヤル） */
+    .wheel {
+      height: 100%;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scroll-snap-type: y mandatory;
+      padding: 72px 0; /* 上下の余白で中央に合わせる */
+      scrollbar-width: none; /* Firefox */
+    }
+    .wheel::-webkit-scrollbar { display: none; } /* Chrome/Safari */
+
+    .wheelItem {
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: rgba(255,255,255,0.75);
+      font-size: 18px;
+      scroll-snap-align: center;
+    }
+
+    .wheelItem.active {
+      color: #fff;
+      font-weight: 800;
+      font-size: 20px;
+    }
+
+    /* 小さめ注釈（必要なら） */
+    .hint {
+      text-align: center;
+      color: rgba(255,255,255,0.75);
+      font-size: 12px;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <!-- 枚数表示：ここをタップしてダイヤル式に -->
+      <div class="badge" id="countBadge" title="タップして枚数を変更">
+        引く枚数 <span id="drawCountText">4</span> 枚
+      </div>
+    </div>
+
+    <canvas id="gameCanvas" width="860" height="520"></canvas>
+
+    <!-- ダイヤル式ピッカー -->
+    <div class="modal" id="modal">
+      <div class="picker" role="dialog" aria-modal="true" aria-label="枚数選択">
+        <div class="pickerHeader">
+          <div>枚数を選択</div>
+          <div style="display:flex; gap:8px;">
+            <button id="cancelBtn">キャンセル</button>
+            <button id="okBtn">決定</button>
+          </div>
+        </div>
+
+        <div class="pickerBody">
+          <div class="centerHighlight"></div>
+          <div class="wheel" id="wheel"></div>
+        </div>
+
+        <div class="hint">スクロールして中央のラインに合わせてください</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // =========================
+    // 基本設定
+    // =========================
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const MARGIN = 18;
+
+    // 引く枚数の選択範囲（必要なら変更）
+    const MIN_N = 1;
+    const MAX_N = 8;
+
+    // デッキ：黒0..11 + 白0..11（color: 0=black, 1=white）
+    const deck = [];
+    for (let n = 0; n <= 11; n++) deck.push({ color: 0, num: n }); // black
+    for (let n = 0; n <= 11; n++) deck.push({ color: 1, num: n }); // white
+
+    // 状態
+    let drawN = 4;          // ★ タップで変更される
+    let cards = [];
+    let isFlipped = false;
+
+    // レイアウト（動的に計算）
+    let CARD_W = 120, CARD_H = 180;
+    let slots = [];
+
+    function recalcLayout() {
+      // キャンバス幅に合わせて、枚数が増えても収まるようにカード幅を調整
+      const maxCardW = 120;
+      const availableW = canvas.width - (drawN - 1) * MARGIN;
+      CARD_W = Math.min(maxCardW, Math.floor(availableW / drawN));
+      CARD_W = Math.max(70, CARD_W);                 // 小さくなりすぎ防止
+      CARD_H = Math.floor(CARD_W * 1.5);
+
+      const totalW = drawN * CARD_W + (drawN - 1) * MARGIN;
+      const startX = (canvas.width - totalW) / 2;
+      const startY = (canvas.height - CARD_H) / 2;
+
+      slots = [];
+      for (let i = 0; i < drawN; i++) {
+        slots.push({ x: startX + i * (CARD_W + MARGIN), y: startY });
+      }
+    }
+
+    // =========================
+    // 抽選＆ソート
+    //  num 昇順、同数なら黒(0)が左
+    // =========================
+    function pickCards() {
+      const arr = deck.slice();
+      const picked = [];
+      for (let i = 0; i < drawN; i++) {
+        const idx = Math.floor(Math.random() * arr.length);
+        picked.push(arr.splice(idx, 1)[0]);
+      }
+      picked.sort((a, b) => (a.num - b.num) || (a.color - b.color));
+      return picked;
+    }
+
+    // =========================
+    // 描画
+    // =========================
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (let i = 0; i < drawN; i++) {
+        const { x, y } = slots[i];
+
+        if (!isFlipped) {
+          // 裏：グレー
+          ctx.fillStyle = '#C8C8C8';
+          ctx.fillRect(x, y, CARD_W, CARD_H);
+          ctx.strokeStyle = '#000';
+          ctx.lineWidth = 4;
+          ctx.strokeRect(x, y, CARD_W, CARD_H);
+          continue;
+        }
+
+        const c = cards[i];
+
+        // ★ 表：白黒の仕様
+        // 黒カード：カード地=黒、数字=白
+        // 白カード：カード地=白、数字=黒
+        const isBlack = (c.color === 0);
+
+        // カード地
+        ctx.fillStyle = isBlack ? '#000' : '#fff';
+        ctx.fillRect(x, y, CARD_W, CARD_H);
+
+        // 枠線
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(x, y, CARD_W, CARD_H);
+
+        // 数字
+        ctx.fillStyle = isBlack ? '#fff' : '#000';
+        ctx.font = `bold ${Math.floor(CARD_W * 0.58)}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(c.num, x + CARD_W / 2, y + CARD_H / 2);
+      }
+    }
+
+    // クリックでめくる（毎回引き直し）
+    canvas.addEventListener('click', () => {
+      cards = pickCards();
+      isFlipped = true;
+      draw();
+    });
+
+    // =========================
+    // ダイヤル式ピッカー（スクロール選択）
+    // =========================
+    const countBadge = document.getElementById('countBadge');
+    const drawCountText = document.getElementById('drawCountText');
+    const modal = document.getElementById('modal');
+    const wheel = document.getElementById('wheel');
+    const cancelBtn = document.getElementById('cancelBtn');
+    const okBtn = document.getElementById('okBtn');
+
+    // ホイール項目生成
+    function buildWheel() {
+      wheel.innerHTML = '';
+      for (let n = MIN_N; n <= MAX_N; n++) {
+        const div = documen
