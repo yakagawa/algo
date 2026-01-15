@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>カードめくりゲーム</title>
+  <style>
+    :root{
+      --green:#228B22;
+      --panel:#ffffffcc;
+      --border:#000;
+      --gray:#C8C8C8;
+      --lightBlack:#444;   /* ★色固定(黒)の薄い背景 */
+      --lightWhite:#f2f2f2;/* ★色固定(白)の薄い背景 */
+    }
+    body, html {
+      margin: 0; padding: 0;
+      background: var(--green);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif;
+    }
+    .wrap{
+      width: min(980px, 96vw);
+      padding: 10px;
+      box-sizing: border-box;
+    }
+    .panel{
+      background: var(--panel);
+      border: 2px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    .topbar{
+      display:flex;
+      gap:10px;
+      align-items:center;
+      flex-wrap:wrap;
+      margin-bottom: 10px;
+    }
+    .topbar .box{
+      background:#fff;
+      border:1px solid #bbb;
+      border-radius: 10px;
+      padding: 8px 10px;
+      display:flex;
+      gap:8px;
+      align-items:center;
+      font-size: 14px;
+    }
+    .topbar select{
+      padding:6px;
+      font-size:14px;
+    }
+
+    .row{
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+    .slotCtl{
+      background: #fff;
+      border: 1px solid #bbb;
+      border-radius: 8px;
+      padding: 8px;
+      box-sizing: border-box;
+    }
+    .slotCtl .head{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      margin-bottom: 6px;
+      opacity: 0.9;
+    }
+    .slotCtl label{
+      display:block;
+      font-size: 12px;
+      margin: 6px 0 2px;
+    }
+    .slotCtl select{
+      width: 100%;
+      padding: 6px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    .hint{
+      font-size: 12px;
+      opacity: 0.9;
+      margin-top: 8px;
+      line-height: 1.35;
+    }
+    .err{
+      margin-top: 8px;
+      color: #b00020;
+      font-weight: 700;
+      min-height: 1.2em;
+    }
+    canvas {
+      width: 100%;
+      height: auto;
+      border: 2px solid #000;
+      background: var(--green);
+      display: block;
+      touch-action: manipulation;
+    }
+
+    @media (max-width: 860px){
+      .row{ grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 650px){
+      .row{ grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <!-- ★(3) スロット数を可変にする -->
+      <div class="topbar">
+        <div class="box">
+          <span>スロット数</span>
+          <select id="slotCount">
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4" selected>4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+          </select>
+        </div>
+        <div style="font-size:12px; opacity:.9;">
+          ※キャンバスをタップ（クリック）で抽選 / 設定変更すると抽選前表示に戻ります
+        </div>
+      </div>
+
+      <div class="row" id="controls"></div>
+
+      <div class="hint">
+        ・各スロットの設定：ランダム／色固定（黒・白）／色＋数字固定。<br>
+        ・抽選前：ランダム＝灰色、色固定＝薄い黒/白のカード、色＋数字固定＝カード表示。<br>
+        ・抽選は「昇順（同数なら黒が左）」＋「同一カード重複なし」＋「固定条件」を満たすように行います。
+      </div>
+      <div class="err" id="err"></div>
+    </div>
+
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const errEl = document.getElementById('err');
+    const controlsEl = document.getElementById('controls');
+    const slotCountSel = document.getElementById('slotCount');
+
+    const CARD_W = 120, CARD_H = 180;
+    const MARGIN = 20;
+    let SLOT_COUNT = parseInt(slotCountSel.value, 10);
+
+    // 黒0-11 + 白0-11
+    const deck = [];
+    for (let n = 0; n <= 11; n++) deck.push({ color: 'black', num: n });
+    for (let n = 0; n <= 11; n++) deck.push({ color: 'white', num: n });
+
+    // スロット座標（SLOT_COUNTに応じて並べる）
+    function buildSlots() {
+      const totalW = SLOT_COUNT * CARD_W + (SLOT_COUNT - 1) * MARGIN;
+      const startX = (canvas.width - totalW) / 2;
+      const startY = (canvas.height - CARD_H) / 2;
+      const slots = [];
+      for (let i = 0; i < SLOT_COUNT; i++) {
+        slots.push({ x: startX + i * (CARD_W + MARGIN), y: startY });
+      }
+      return slots;
+    }
+    let slots = buildSlots();
+
+    // 状態
+    let cards = [];        // 抽選後の並び（左→右）
+    let isFlipped = false; // 抽選後かどうか
+
+    // ★(3) スロット数変更時：設定を再構築
+    slotCountSel.addEventListener('change', () => {
+      SLOT_COUNT = parseInt(slotCountSel.value, 10);
+      isFlipped = false;
+      errEl.textContent = '';
+      buildControls();
+      refreshLayout();
+    });
+
+    // UI生成
+    function buildControls(){
+      controlsEl.innerHTML = '';
+      for (let i=0; i<SLOT_COUNT; i++){
+        const box = document.createElement('div');
+        box.className = 'slotCtl';
+        box.innerHTML = `
+          <div class="head">
+            <div>スロット${i+1}</div>
+            <div style="opacity:.7;">左→右</div>
+          </div>
+
+          <label>モード</label>
+          <select id="mode-${i}">
+            <option value="random">ランダム</option>
+            <option value="color">色固定</option>
+            <option value="card">色＋数字固定</option>
+          </select>
+
+          <div id="colorWrap-${i}" style="display:none;">
+            <label>固定する色</label>
+            <select id="color-${i}">
+              <option value="black">黒</option>
+              <option value="white">白</option>
+            </select>
+          </div>
+
+          <div id="cardWrap-${i}" style="display:none;">
+            <label>固定する色</label>
+            <select id="cardColor-${i}">
+              <option value="black">黒</option>
+              <option value="white">白</option>
+            </select>
+            <label>固定する数字</label>
+            <select id="num-${i}">
+              ${Array.from({length:12}, (_,n)=>`<option value="${n}">${n}</option>`).join('')}
+            </select>
+          </div>
+        `;
+        controlsEl.appendChild(box);
+
+        const modeSel  = box.querySelector(`#mode-${i}`);
+        const colorWrap= box.querySelector(`#colorWrap-${i}`);
+        const cardWrap = box.querySelector(`#cardWrap-${i}`);
+
+        modeSel.addEventListener('change', () => {
+          const m = modeSel.value;
+          colorWrap.style.display = (m === 'color') ? 'block' : 'none';
+          cardWrap.style.display  = (m === 'card')  ? 'block' : 'none';
+
+          isFlipped = false;
+          errEl.textContent = '';
+          draw();
+        });
+
+        box.querySelectorAll('select').forEach(sel=>{
+          sel.addEventListener('change', () => {
+            isFlipped = false;
+            errEl.textContent = '';
+            draw();
+          });
+        });
+      }
+    }
+    buildControls();
+
+    // カード順序：num昇順、同数なら黒が左
+    function cmpCard(a,b){
+      if (a.num !== b.num) return a.num - b.num;
+      const ra = (a.color === 'black') ? 0 : 1;
+      const rb = (b.color === 'black') ? 0 : 1;
+      return ra - rb;
+    }
+    function leq(a,b){ return cmpCard(a,b) <= 0; }
+    function key(c){ return c.color + ':' + c.num; }
+
+    // UIから制約を取得
+    function getConstraints(){
+      const cons = [];
+      for (let i=0;i<SLOT_COUNT;i++){
+        const mode = document.getElementById(`mode-${i}`).value;
+        if (mode === 'random'){
+          cons.push({ type:'random' });
+        } else if (mode === 'color'){
+          const color = document.getElementById(`color-${i}`).value;
+          cons.push({ type:'color', color });
+        } else { // 'card'
+          const color = document.getElementById(`cardColor-${i}`).value;
+          const num = parseInt(document.getElementById(`num-${i}`).value, 10);
+          cons.push({ type:'card', card:{color, num} });
+        }
+      }
+      return cons;
+    }
+
+    // 可能なら1回作る（DFSでランダム性も入れる）
+    function buildHandOnce(constraints){
+      // 固定カード重複チェック
+      const fixedKeys = [];
+      for (let i=0;i<constraints.length;i++){
+        if (constraints[i].type === 'card'){
+          fixedKeys.push(key(constraints[i].card));
+        }
+      }
+      const set = new Set(fixedKeys);
+      if (set.size !== fixedKeys.length){
+        return { ok:false, reason:"固定カードが重複しています（同一カードは1枚まで）" };
+      }
+
+      // 残りデッキ
+      const fixedSet = new Set(fixedKeys);
+      const remaining = deck.filter(c => !fixedSet.has(key(c)));
+
+      // 右側の次の「カード固定」を前計算（枝刈り）
+      const nextFixed = Array(SLOT_COUNT).fill(null);
+      let last = null;
+      for (let i=SLOT_COUNT-1; i>=0; i--){
+        nextFixed[i] = last;
+        if (constraints[i].type === 'card'){
+          last = constraints[i].card;
+        }
+      }
+
+      function shuffle(arr){
+        for (let i=arr.length-1;i>0;i--){
+          const j = Math.floor(Math.random()*(i+1));
+          [arr[i],arr[j]]=[arr[j],arr[i]];
+        }
+      }
+
+      const full = Array(SLOT_COUNT).fill(null);
+      const pool = remaining.slice();
+      shuffle(pool);
+
+      function prevCard(pos){
+        for (let j=pos-1;j>=0;j--){
+          if (full[j]) return full[j];
+        }
+        return null;
+      }
+
+      function dfs(i){
+        if (i===SLOT_COUNT) return true;
+
+        const prev = prevCard(i);
+        const rightFixed = nextFixed[i]; // card固定だけ
+        const con = constraints[i];
+
+        function okOrder(c){
+          if (prev && !leq(prev, c)) return false;
+          if (rightFixed && !leq(c, rightFixed)) return false;
+          return true;
+        }
+
+        if (con.type === 'card'){
+          const c = con.card;
+          if (!okOrder(c)) return false;
+          full[i] = c;
+          if (dfs(i+1)) return true;
+          full[i] = null;
+          return false;
+        }
+
+        let candidates = [];
+        if (con.type === 'color'){
+          candidates = pool.filter(c => c.color===con.color && okOrder(c));
+        } else {
+          candidates = pool.filter(c => okOrder(c));
+        }
+
+        if (candidates.length === 0) return false;
+        shuffle(candidates);
+
+        for (const c of candidates){
+          const k = pool.findIndex(x => x.color===c.color && x.num===c.num);
+          if (k<0) continue;
+
+          const removed = pool.splice(k,1)[0];
+          full[i] = removed;
+
+          if (dfs(i+1)) return true;
+
+          full[i] = null;
+          pool.splice(k,0,removed);
+        }
+
+        return false;
+      }
+
+      const ok = dfs(0);
+      if (!ok) return { ok:false, reason:"この設定ではルールを満たす並びが作れません" };
+
+      for (let i=1;i<SLOT_COUNT;i++){
+        if (!leq(full[i-1], full[i])) {
+          return { ok:false, reason:"内部エラー：順序条件を満たしませんでした" };
+        }
+      }
+
+      return { ok:true, hand: full };
+    }
+
+    function buildHand(constraints, maxTry=4000){
+      for (let t=0; t<maxTry; t++){
+        const r = buildHandOnce(constraints);
+        if (r.ok) return r;
+      }
+      return { ok:false, reason:"リトライ上限に達しました（条件が厳しすぎる可能性）" };
+    }
+
+    // ★(1) 色固定の抽選前表示を「薄い黒/白」にする
+    function preColorFixedStyle(color){
+      // CSS変数に合わせた薄い色（JS側は直値で）
+      // 黒固定：暗めのグレー、白固定：明るいグレー
+      return (color === 'black') ? '#444' : '#f2f2f2';
+    }
+    function preColorFixedTextColor(color){
+      // 背景に対して見えるように
+      return (color === 'black') ? '#fff' : '#000';
+    }
+
+    // 描画
+    function draw(){
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      const constraints = getConstraints();
+
+      for (let i=0;i<SLOT_COUNT;i++){
+        const {x,y} = slots[i];
+
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = '#000';
+
+        if (!isFlipped){
+          const con = constraints[i];
+
+          if (con.type === 'card'){
+            const card = con.card;
+
+            ctx.fillStyle = (card.color==='black') ? '#000' : '#fff';
+            ctx.fillRect(x,y,CARD_W,CARD_H);
+            ctx.strokeRect(x,y,CARD_W,CARD_H);
+
+            ctx.fillStyle = (card.color==='black') ? '#fff' : '#000';
+            ctx.font = 'bold 72px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(card.num, x+CARD_W/2, y+CARD_H/2);
+
+          } else if (con.type === 'color'){
+            // ★薄い黒/白で表示（数字なし）
+            ctx.fillStyle = preColorFixedStyle(con.color);
+            ctx.fillRect(x,y,CARD_W,CARD_H);
+            ctx.strokeRect(x,y,CARD_W,CARD_H);
+
+            ctx.fillStyle = preColorFixedTextColor(con.color);
+            ctx.font = 'bold 18px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            const label = (con.color==='black') ? '黒固定' : '白固定';
+            ctx.fillText(label, x+CARD_W/2, y+CARD_H/2);
+
+          } else {
+            // random：グレー（数字なし）
+            ctx.fillStyle = '#C8C8C8';
+            ctx.fillRect(x,y,CARD_W,CARD_H);
+            ctx.strokeRect(x,y,CARD_W,CARD_H);
+          }
+
+        } else {
+          const card = cards[i];
+
+          ctx.fillStyle = (card.color === 'black') ? '#000' : '#fff';
+          ctx.fillRect(x,y,CARD_W,CARD_H);
+          ctx.strokeRect(x,y,CARD_W,CARD_H);
+
+          ctx.fillStyle = (card.color === 'black') ? '#fff' : '#000';
+          ctx.font = 'bold 72px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(card.num, x+CARD_W/2, y+CARD_H/2);
+        }
+      }
+    }
+
+    // クリックで抽選
+    canvas.addEventListener('click', () => {
+      errEl.textContent = '';
+
+      const constraints = getConstraints();
+      const r = buildHand(constraints, 5000);
+
+      if (!r.ok){
+        isFlipped = false;
+        errEl.textContent = "エラー： " + r.reason;
+        draw();
+        return;
+      }
+
+      cards = r.hand;
+      isFlipped = true;
+      draw();
+    });
+
+    // レイアウト更新
+    function refreshLayout(){
+      slots = buildSlots();
+      draw();
+    }
+    window.addEventListener('resize', refreshLayout);
+
+    draw();
+  </script>
+</body>
+</html>
