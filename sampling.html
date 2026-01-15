@@ -2,27 +2,54 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <title>algo</title>
+  <!-- ★スマホ対応：これがないと横幅計算が崩れやすい -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>アルゴのサンプリング</title>
   <style>
     body, html {
       margin: 0; padding: 0;
       background: #228B22;
-      display: flex; justify-content: center; align-items: center;
-      height: 100vh;
-      gap: 18px;
       font-family: sans-serif;
     }
-    #wrap { display: flex; gap: 18px; align-items: center; }
-    canvas { border: 2px solid #000; background: #228B22; }
+
+    /* ★スマホで左右が切れないように、全体に少し余白 */
+    body {
+      padding: 12px;
+      box-sizing: border-box;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+    }
+
+    /* ★横並びが基本。狭いときは後で縦並びにする */
+    #wrap {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      justify-content: center;
+      width: 100%;
+      max-width: 1200px;
+    }
+
+    /* ★canvasはCSSで画面幅に収まるように縮小 */
+    canvas {
+      border: 2px solid #000;
+      background: #228B22;
+      width: min(800px, 100%);
+      height: auto; /* アスペクト比維持で縮小 */
+      touch-action: manipulation; /* スマホのタップ遅延を減らす */
+    }
 
     #panel{
       width: 330px;
+      max-width: 100%;
       background: rgba(255,255,255,0.92);
       border: 2px solid #000;
       border-radius: 10px;
       padding: 12px;
       box-sizing: border-box;
-      max-height: 92vh;
+      max-height: calc(100vh - 24px);
       overflow-y: auto;
     }
     #panel h2{ margin:0 0 10px; font-size:16px; }
@@ -34,6 +61,7 @@
       margin-bottom: 10px;
       font-size: 13px;
       font-weight: bold;
+      gap: 10px;
     }
 
     .slotBlock{
@@ -93,6 +121,20 @@
       opacity: 0.85;
       line-height: 1.35;
     }
+
+    /* ★スマホ：縦並びにして「左端が見えない」を根本解消 */
+    @media (max-width: 900px) {
+      #wrap {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      #panel {
+        width: 100%;
+      }
+      canvas {
+        width: 100%;
+      }
+    }
   </style>
 </head>
 <body>
@@ -109,7 +151,6 @@
 
     <div id="selectors"></div>
     <div id="errorBox"></div>
-
   </div>
 </div>
 
@@ -168,7 +209,7 @@ function shuffleInPlace(arr){
 
 /* ===================== レイアウト ===================== */
 function rebuildSlots(){
-  // 横に収めるためカード幅を調整
+  // 800x600 の内部解像度に対して、座標計算は内部サイズで行う
   const paddingX = 40;
   const availableW = canvas.width - paddingX * 2;
   const idealW = (availableW - (SLOT_COUNT - 1) * MARGIN) / SLOT_COUNT;
@@ -219,15 +260,7 @@ function draw(){
   }
 }
 
-/* =========================================================
-   ここが今回の変更点：カード選びは
-   (1) 固定を除外
-   (2) 残り必要枚数をランダムに引く
-   (3) 引いたカードを「ランダムに」スロットへ配置（昇順制約を満たす）
-       できなければ (2) に戻る
-========================================================= */
-
-// 固定情報を作る
+/* ===================== (1)(2)(3)方式 ===================== */
 function getFixedInfo(){
   const fixedAt = Array(SLOT_COUNT).fill(null);
   const fixedList = [];
@@ -243,7 +276,6 @@ function getFixedInfo(){
     }
   }
 
-  // 固定重複チェック
   const s = new Set(fixedList.map(cardKey));
   if (s.size !== fixedList.length){
     return { ok:false, msg:'エラー：固定カードが重複しています。' };
@@ -252,10 +284,7 @@ function getFixedInfo(){
   return { ok:true, fixedAt, fixedList, randomPositions };
 }
 
-// (3) 引いたカード drawn を、ランダムスロットへ「ランダムに」配置できるか試す
-// 成功したら fullCards（スロット順の配列）を返す
 function tryPlaceDrawnIntoRandomSlots(fixedAt, randomPositions, drawn){
-  // 右側の次固定（上限）を前計算
   const nextFixed = Array(SLOT_COUNT).fill(null);
   let last = null;
   for (let i = SLOT_COUNT - 1; i >= 0; i--){
@@ -264,69 +293,17 @@ function tryPlaceDrawnIntoRandomSlots(fixedAt, randomPositions, drawn){
   }
 
   const full = Array(SLOT_COUNT).fill(null);
-  // 固定は先に入れる
   for (let i = 0; i < SLOT_COUNT; i++){
     if (fixedAt[i]) full[i] = fixedAt[i];
   }
 
-  // drawn を可変リストとして持つ
   const pool = drawn.slice();
-
-  function dfs(posIndex, prevCard){
-    if (posIndex === randomPositions.length) return true;
-
-    const pos = randomPositions[posIndex];
-    const rightBound = nextFixed[pos]; // null or card
-
-    // この位置に置ける候補を列挙し、順番もランダムにする
-    const candidatesIdx = [];
-    for (let k = 0; k < pool.length; k++){
-      const c = pool[k];
-      if (prevCard && !leq(prevCard, c)) continue;
-      if (rightBound && !leq(c, rightBound)) continue;
-      candidatesIdx.push(k);
-    }
-    if (candidatesIdx.length === 0) return false;
-
-    shuffleInPlace(candidatesIdx);
-
-    for (const k of candidatesIdx){
-      const c = pool[k];
-
-      // 置く
-      full[pos] = c;
-
-      // pool から削除して次へ
-      const removed = pool.splice(k, 1)[0];
-      if (dfs(posIndex + 1, c)) return true;
-
-      // 戻す
-      pool.splice(k, 0, removed);
-      full[pos] = null;
-    }
-    return false;
-  }
-
-  // DFS で置く（prevCardは「直前のスロットのカード」）
-  function prevCardAtPosition(pos){
-    for (let i = pos - 1; i >= 0; i--){
-      if (full[i]) return full[i];
-      // まだ未配置のランダム位置もありうるが、DFSは左から埋めるので
-      // 「full[i] が null」ならまだ埋まってないだけ。→ prevCard は posIndex によって保証される
-    }
-    return null;
-  }
-
-  // randomPositions は左から順に埋めたいので昇順にする
   const rp = randomPositions.slice().sort((a,b)=>a-b);
 
-  // DFS中、prevCardは「直前の確定カード」になる必要があるので、
-  // 各ステップで prev を更新するため、埋めた full を見て決める実装にする。
-  function dfs2(idx){
+  function dfs(idx){
     if (idx === rp.length) return true;
     const pos = rp[idx];
 
-    // 直前確定カードを取る
     const prev = (() => {
       for (let i = pos - 1; i >= 0; i--){
         if (full[i]) return full[i];
@@ -336,7 +313,6 @@ function tryPlaceDrawnIntoRandomSlots(fixedAt, randomPositions, drawn){
 
     const rightBound = nextFixed[pos];
 
-    // 候補インデックス
     const candIdx = [];
     for (let k = 0; k < pool.length; k++){
       const c = pool[k];
@@ -351,9 +327,9 @@ function tryPlaceDrawnIntoRandomSlots(fixedAt, randomPositions, drawn){
     for (const k of candIdx){
       const c = pool[k];
       full[pos] = c;
-      const removed = pool.splice(k, 1)[0];
 
-      if (dfs2(idx + 1)) return true;
+      const removed = pool.splice(k, 1)[0];
+      if (dfs(idx + 1)) return true;
 
       pool.splice(k, 0, removed);
       full[pos] = null;
@@ -361,18 +337,15 @@ function tryPlaceDrawnIntoRandomSlots(fixedAt, randomPositions, drawn){
     return false;
   }
 
-  const ok = dfs2(0);
+  const ok = dfs(0);
   if (!ok) return null;
 
-  // 最終チェック：全スロットが昇順制約を満たすか（念のため）
   for (let i = 1; i < SLOT_COUNT; i++){
     if (!leq(full[i-1], full[i])) return null;
   }
-
   return full;
 }
 
-// (1)(2)(3) をまとめて実行：成功するまで(2)に戻る
 function buildByResample(){
   const info = getFixedInfo();
   if (!info.ok) return { ok:false, msg: info.msg };
@@ -380,25 +353,20 @@ function buildByResample(){
   const { fixedAt, fixedList, randomPositions } = info;
   const need = randomPositions.length;
 
-  // 固定が増えすぎてデッキ不足
   if (deck.length - fixedList.length < need){
     return { ok:false, msg:'エラー：残りデッキが不足しています。' };
   }
 
-  // (1) 固定を除外したデッキ
   const fixedSet = new Set(fixedList.map(cardKey));
   const baseRemaining = deck.filter(c => !fixedSet.has(cardKey(c)));
 
   const MAX_RESAMPLE = 2000;
 
   for (let t = 0; t < MAX_RESAMPLE; t++){
-    // (2) need枚をランダムで引く（重複なし）
     const rem = baseRemaining.slice();
-    // Fisher-Yatesで先頭need枚取るのが速い
     shuffleInPlace(rem);
     const drawn = rem.slice(0, need);
 
-    // (3) 引いたカードをランダムにスロットへ配置（できなければ(2)へ）
     const placed = tryPlaceDrawnIntoRandomSlots(fixedAt, randomPositions, drawn);
     if (placed) return { ok:true, cards: placed };
   }
@@ -411,19 +379,16 @@ function previewFixedOnly(){
   clearError();
   cards = Array(SLOT_COUNT).fill(null);
 
-  // 固定だけ反映
   for (let i = 0; i < SLOT_COUNT; i++){
     if (settings[i].mode === 'fixed'){
       cards[i] = { color: settings[i].color, num: Number(settings[i].num) };
     }
   }
 
-  // 固定が矛盾していたらエラー表示（この時点でも分かるように）
   const info = getFixedInfo();
   if (!info.ok){
     showError(info.msg);
   } else {
-    // 一応「確定させようとすると可能か」を軽く確認（表示は固定のみのまま）
     const test = buildByResample();
     if (!test.ok) showError(test.msg);
   }
@@ -433,7 +398,6 @@ function previewFixedOnly(){
 
 /* ===================== UI構築 ===================== */
 function rebuildSettings(){
-  // settings初期化（スロット数に合わせる）
   settings = Array.from({length: SLOT_COUNT}, (_, i) => ({
     mode: 'random',
     color: (i % 2 === 0) ? 'black' : 'white',
@@ -474,7 +438,6 @@ function rebuildSettings(){
     const colorSel = block.querySelector('.colorSel');
     const numSel   = block.querySelector('.numSel');
 
-    // 初期値
     colorSel.value = settings[i].color;
     numSel.value   = settings[i].num;
 
@@ -515,7 +478,6 @@ function rebuildSettings(){
 
 /* ===================== イベント ===================== */
 canvas.addEventListener('click', () => {
-  // クリックでランダム枠を確定（(1)(2)(3)方式）
   const res = buildByResample();
   if (!res.ok){
     showError(res.msg);
@@ -528,7 +490,6 @@ canvas.addEventListener('click', () => {
 
 /* ===================== 初期化（枚数選択） ===================== */
 (function initCountSelect(){
-  // 画面に収まりやすい範囲として2〜8
   for (let n = 2; n <= 8; n++){
     const opt = document.createElement('option');
     opt.value = String(n);
